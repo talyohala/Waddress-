@@ -3,11 +3,12 @@ import asyncio
 import sqlite3
 from datetime import datetime
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.filters import Command
+from aiogram.filters.state import StateFilter
 from config import TOKEN
 import pandas as pd
 
@@ -51,7 +52,7 @@ def get_main_keyboard():
     ])
     return keyboard
 
-# ✅ הודעת ברוכים הבאים שמשתנה לפי הזמן
+# ✅ הודעת ברוכים הבאים דינמית
 def get_welcome_message():
     hour = datetime.now().hour
     if 5 <= hour < 12:
@@ -72,42 +73,42 @@ async def start_command(message: types.Message):
     await message.answer(f"{get_welcome_message()} {username}! אני כאן כדי לעזור לך עם דירות 🏡\nבחר פעולה מהתפריט למטה:",
                          reply_markup=get_main_keyboard())
 
-# ✅ הוספת דירה
+# ✅ ניהול מצבים (FSM) - הוספת דירה
 class AddListingStates(StatesGroup):
     DESCRIPTION = State()
     PRICE = State()
     PHOTO = State()
 
 @dp.callback_query(lambda c: c.data == "add_listing")
-async def add_listing_callback(callback: types.CallbackQuery):
+async def add_listing_callback(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.answer("🏡 **הוספת דירה**\nשלח את תיאור הדירה:")
-    await AddListingStates.DESCRIPTION.set()
+    await state.set_state(AddListingStates.DESCRIPTION)
 
-@dp.message(state=AddListingStates.DESCRIPTION)
+@dp.message(StateFilter(AddListingStates.DESCRIPTION))
 async def add_listing_description(message: types.Message, state: FSMContext):
     async with state.proxy() as data:
         data['description'] = message.text
     await message.answer("💰 שלח את המחיר:")
-    await AddListingStates.PRICE.set()
+    await state.set_state(AddListingStates.PRICE)
 
-@dp.message(state=AddListingStates.PRICE)
+@dp.message(StateFilter(AddListingStates.PRICE))
 async def add_listing_price(message: types.Message, state: FSMContext):
     try:
         price = int(message.text)
         async with state.proxy() as data:
             data['price'] = price
         await message.answer("📸 שלח תמונה של הדירה (או הקלד /skip כדי לדלג).")
-        await AddListingStates.PHOTO.set()
+        await state.set_state(AddListingStates.PHOTO)
     except ValueError:
         await message.answer("⚠️ יש להזין מחיר חוקי.")
 
-@dp.message(state=AddListingStates.PHOTO, content_types=['photo'])
+@dp.message(StateFilter(AddListingStates.PHOTO), content_types=['photo'])
 async def add_listing_photo(message: types.Message, state: FSMContext):
     async with state.proxy() as data:
         data['photo_id'] = message.photo[-1].file_id
     await save_listing(message, state)
 
-@dp.message(Command("skip"), state=AddListingStates.PHOTO)
+@dp.message(Command("skip"), StateFilter(AddListingStates.PHOTO))
 async def skip_listing_photo(message: types.Message, state: FSMContext):
     async with state.proxy() as data:
         data['photo_id'] = None
@@ -119,26 +120,37 @@ async def save_listing(message: types.Message, state: FSMContext):
                        (message.from_user.id, data['description'], data['price'], data.get('photo_id')))
         conn.commit()
     await message.answer("✅ הדירה נוספה בהצלחה!", reply_markup=get_main_keyboard())
-    await state.finish()
+    await state.clear()
 
-# ✅ דירוג דירות
-@dp.callback_query(lambda c: c.data == "rate_listing")
-async def rate_listing_callback(callback: types.CallbackQuery):
-    await callback.message.answer("🔢 אנא הזן את מזהה הדירה (ID) שברצונך לדרג:")
+# ✅ חיפוש דירות
+@dp.callback_query(lambda c: c.data == "search")
+async def search_listing_callback(callback: types.CallbackQuery):
+    await callback.message.answer("🔍 **חיפוש דירות**\nשלח פקודה בפורמט:\n\n`/search מינימום מחיר מקסימום מחיר`")
 
-@dp.message()
-async def rate_listing(message: types.Message):
+@dp.message(Command("search"))
+async def search_listing(message: types.Message):
     try:
-        listing_id, rating = map(int, message.text.split())
-        if rating not in [1, 2, 3]:
-            await message.answer("⚠️ הדירוג חייב להיות 1 (אדום), 2 (צהוב), או 3 (ירוק).")
+        parts = message.text.split()
+        if len(parts) != 3:
+            await message.answer("🔍 **שימוש נכון:** /search מינימום מקסימום")
             return
-        cursor.execute("UPDATE listings SET rating = ? WHERE id = ?", (rating, listing_id))
-        conn.commit()
-        await message.answer(f"✅ הדירה #{listing_id} דורגה בהצלחה!", reply_markup=get_main_keyboard())
+
+        min_price = int(parts[1])
+        max_price = int(parts[2])
+
+        cursor.execute("SELECT description, price FROM listings WHERE price BETWEEN ? AND ?", (min_price, max_price))
+        rows = cursor.fetchall()
+
+        if not rows:
+            await message.answer("❌ לא נמצאו דירות בטווח המחירים הזה.")
+            return
+
+        results = "\n".join([f"🏡 {desc} - {price} ש״ח" for desc, price in rows])
+        await message.answer(f"🔎 **תוצאות חיפוש:**\n{results}")
+
     except Exception as e:
-        logging.error(f"Error in rating listing: {e}")
-        await message.answer("❌ שגיאה בדירוג. ודא שאתה מזין ID ודירוג חוקיים.")
+        logging.error(f"Error in search_listing: {e}")
+        await message.answer("❌ שגיאה בחיפוש. נסה שוב.")
 
 # ✅ הפעלת הבוט
 async def main():
