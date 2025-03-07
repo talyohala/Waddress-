@@ -3,12 +3,13 @@ import asyncio
 import sqlite3
 from datetime import datetime
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ContentType
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.filters import Command
 from aiogram.filters.state import StateFilter
+from aiogram.filters import ContentTypeFilter
 from config import TOKEN
 import pandas as pd
 
@@ -102,7 +103,7 @@ async def add_listing_price(message: types.Message, state: FSMContext):
     except ValueError:
         await message.answer("⚠️ יש להזין מחיר חוקי.")
 
-@dp.message(StateFilter(AddListingStates.PHOTO), content_types=['photo'])
+@dp.message(StateFilter(AddListingStates.PHOTO), ContentTypeFilter(ContentType.PHOTO))
 async def add_listing_photo(message: types.Message, state: FSMContext):
     async with state.proxy() as data:
         data['photo_id'] = message.photo[-1].file_id
