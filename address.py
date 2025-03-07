@@ -2,14 +2,13 @@ import logging
 import asyncio
 import sqlite3
 from datetime import datetime
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ContentType
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.filters import Command
 from aiogram.filters.state import StateFilter
-from aiogram.filters import ContentTypeFilter
 from config import TOKEN
 import pandas as pd
 
@@ -103,7 +102,7 @@ async def add_listing_price(message: types.Message, state: FSMContext):
     except ValueError:
         await message.answer("⚠️ יש להזין מחיר חוקי.")
 
-@dp.message(StateFilter(AddListingStates.PHOTO), ContentTypeFilter(ContentType.PHOTO))
+@dp.message(StateFilter(AddListingStates.PHOTO), F.content_type == ContentType.PHOTO)
 async def add_listing_photo(message: types.Message, state: FSMContext):
     async with state.proxy() as data:
         data['photo_id'] = message.photo[-1].file_id
@@ -122,36 +121,6 @@ async def save_listing(message: types.Message, state: FSMContext):
         conn.commit()
     await message.answer("✅ הדירה נוספה בהצלחה!", reply_markup=get_main_keyboard())
     await state.clear()
-
-# ✅ חיפוש דירות
-@dp.callback_query(lambda c: c.data == "search")
-async def search_listing_callback(callback: types.CallbackQuery):
-    await callback.message.answer("🔍 **חיפוש דירות**\nשלח פקודה בפורמט:\n\n`/search מינימום מחיר מקסימום מחיר`")
-
-@dp.message(Command("search"))
-async def search_listing(message: types.Message):
-    try:
-        parts = message.text.split()
-        if len(parts) != 3:
-            await message.answer("🔍 **שימוש נכון:** /search מינימום מקסימום")
-            return
-
-        min_price = int(parts[1])
-        max_price = int(parts[2])
-
-        cursor.execute("SELECT description, price FROM listings WHERE price BETWEEN ? AND ?", (min_price, max_price))
-        rows = cursor.fetchall()
-
-        if not rows:
-            await message.answer("❌ לא נמצאו דירות בטווח המחירים הזה.")
-            return
-
-        results = "\n".join([f"🏡 {desc} - {price} ש״ח" for desc, price in rows])
-        await message.answer(f"🔎 **תוצאות חיפוש:**\n{results}")
-
-    except Exception as e:
-        logging.error(f"Error in search_listing: {e}")
-        await message.answer("❌ שגיאה בחיפוש. נסה שוב.")
 
 # ✅ הפעלת הבוט
 async def main():
