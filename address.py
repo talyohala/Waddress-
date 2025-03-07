@@ -6,25 +6,25 @@ import psutil
 from datetime import datetime
 from contextlib import asynccontextmanager
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.filters import Command
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.memory import MemoryStorage
 from dotenv import load_dotenv
-from enum import Enum
-from functools import lru_cache
 import random
 
 # ✅ טעינת משתני סביבה
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
 
-# ✅ הגדרת הבוט
+# ✅ בדיקת תקינות ה-TOKEN
+if not TOKEN:
+    raise ValueError("❌ שגיאה: TOKEN לא מוגדר! בדוק את קובץ ה-.env שלך.")
+
+# ✅ הגדרת הבוט וה-Dispatcher
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# ✅ ניהול תהליכים ישנים
+# ✅ ניהול תהליכים ישנים (מונע התנגשויות של הבוט)
 def kill_old_processes():
     current_pid = os.getpid()
     for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
@@ -41,34 +41,6 @@ def kill_old_processes():
 
 kill_old_processes()
 
-# ✅ הגדרת Enum לקטגוריות
-class Category(Enum):
-    APARTMENT = "דירה"
-    HOUSE = "בית"
-    LAND = "קרקע"
-
-# ✅ הודעות ברוכים הבא דינמיות
-welcome_messages = [
-    "☀️ בוקר טוב! מוכנים למצוא את דירת החלומות שלכם? 🏡",
-    "🌤️ צהריים טובים! אולי זה הזמן לרכוש דירה חדשה? 🏠",
-    "🌙 ערב טוב! דירות חמות מחכות לכם 🔥"
-]
-
-@lru_cache(maxsize=100)
-def get_welcome_message():
-    return random.choice(welcome_messages)
-
-# ✅ מקלדת כפתורים עם קטגוריות
-def get_main_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 מחשבון משכנתא", callback_data="calc")],
-        [InlineKeyboardButton(text="🏡 הוספת דירה", callback_data="add_listing")],
-        [InlineKeyboardButton(text="🔍 חיפוש דירות", callback_data="search")],
-        [InlineKeyboardButton(text="📈 סטטיסטיקות", callback_data="stats")],
-        [InlineKeyboardButton(text="📝 דירוג דירות", callback_data="rate_listing")],
-        [InlineKeyboardButton(text="ℹ️ עזרה", callback_data="help")]
-    ])
-
 # ✅ חיבור למסד נתונים SQLite
 @asynccontextmanager
 async def get_db():
@@ -76,9 +48,18 @@ async def get_db():
         db.row_factory = aiosqlite.Row
         yield db
 
-# ✅ יצירת טבלאות
+# ✅ יצירת טבלאות במסד הנתונים
 async def init_db():
     async with get_db() as db:
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            first_name TEXT,
+            last_name TEXT,
+            last_active TIMESTAMP
+        )
+        """)
         await db.execute("""
         CREATE TABLE IF NOT EXISTS listings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -90,112 +71,98 @@ async def init_db():
             rating INTEGER DEFAULT NULL
         )
         """)
-        await db.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            first_name TEXT,
-            last_name TEXT,
-            last_active TIMESTAMP
-        )
-        """)
         await db.commit()
+
+# ✅ הודעות ברוכים הבאים דינמיות
+welcome_messages = [
+    "☀️ בוקר טוב! מוכנים למצוא את דירת החלומות שלכם? 🏡",
+    "🌤️ צהריים טובים! אולי זה הזמן לרכוש דירה חדשה? 🏠",
+    "🌙 ערב טוב! דירות חמות מחכות לכם 🔥"
+]
+
+def get_welcome_message():
+    return random.choice(welcome_messages)
+
+# ✅ כפתורי קטגוריות ראשיים
+def get_main_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🏡 דירות ונכסים", callback_data="category_real_estate")],
+        [InlineKeyboardButton(text="📊 מחשבון משכנתא", callback_data="category_mortgage")],
+        [InlineKeyboardButton(text="📈 סטטיסטיקות", callback_data="category_stats")],
+        [InlineKeyboardButton(text="ℹ️ עזרה", callback_data="help")]
+    ])
+
+# ✅ כפתורי תפריט משנה – דירות ונכסים
+def get_real_estate_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔍 חיפוש דירות", callback_data="search")],
+        [InlineKeyboardButton(text="➕ הוספת דירה", callback_data="add_listing")],
+        [InlineKeyboardButton(text="📜 רשימת הדירות שלי", callback_data="my_listings")],
+        [InlineKeyboardButton(text="🔙 חזור לתפריט ראשי", callback_data="main_menu")]
+    ])
+
+# ✅ כפתורי תפריט משנה – מחשבוני משכנתא
+def get_mortgage_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 חישוב משכנתא", callback_data="calc")],
+        [InlineKeyboardButton(text="💰 חישוב החזר כולל", callback_data="total_payment")],
+        [InlineKeyboardButton(text="🔙 חזור לתפריט ראשי", callback_data="main_menu")]
+    ])
+
+# ✅ כפתורי תפריט משנה – סטטיסטיקות
+def get_stats_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📈 סטטיסטיקות דירות", callback_data="stats")],
+        [InlineKeyboardButton(text="🏆 הדירות המדורגות ביותר", callback_data="top_rated")],
+        [InlineKeyboardButton(text="🔙 חזור לתפריט ראשי", callback_data="main_menu")]
+    ])
+
+# ✅ ניווט בין קטגוריות
+@dp.callback_query(F.data == "main_menu")
+async def back_to_main(callback: CallbackQuery):
+    await callback.message.edit_text("🔝 חזרת לתפריט הראשי. בחר פעולה:", reply_markup=get_main_keyboard())
+
+@dp.callback_query(F.data == "category_real_estate")
+async def real_estate_menu(callback: CallbackQuery):
+    await callback.message.edit_text("🏡 **תפריט דירות ונכסים**\nבחר פעולה:", reply_markup=get_real_estate_keyboard())
+
+@dp.callback_query(F.data == "category_mortgage")
+async def mortgage_menu(callback: CallbackQuery):
+    await callback.message.edit_text("📊 **תפריט מחשבוני משכנתא**\nבחר פעולה:", reply_markup=get_mortgage_keyboard())
+
+@dp.callback_query(F.data == "category_stats")
+async def stats_menu(callback: CallbackQuery):
+    await callback.message.edit_text("📈 **תפריט סטטיסטיקות**\nבחר פעולה:", reply_markup=get_stats_keyboard())
 
 # ✅ פקודת /start
 @dp.message(Command("start"))
 async def start_command(message: types.Message):
     user_id = message.from_user.id
     username = message.from_user.username
-    first_name = message.from_user.first_name
+    first_name = message.from_user.first_name or "משתמש"
     last_name = message.from_user.last_name or ""
 
-    full_name = f"{first_name} {last_name}".strip() if first_name else (username if username else f"משתמש {user_id}")
+    full_name = f"{first_name} {last_name}".strip()
 
     async with get_db() as db:
-        await db.execute("INSERT OR IGNORE INTO users (user_id, username, first_name, last_name, last_active) VALUES (?, ?, ?, ?, ?)",
-                         (user_id, username, first_name, last_name, datetime.now()))
+        await db.execute("""
+        INSERT OR IGNORE INTO users (user_id, username, first_name, last_name, last_active) 
+        VALUES (?, ?, ?, ?, ?)
+        """, (user_id, username, first_name, last_name, datetime.now()))
         await db.commit()
 
     await message.answer(f"{get_welcome_message()} {full_name}! 🎉\nבחר פעולה מהתפריט למטה:",
                          reply_markup=get_main_keyboard())
 
-# ✅ מחשבון משכנתא
-@dp.callback_query(F.data == "calc")
-async def calc_callback(callback: types.CallbackQuery):
-    await callback.message.answer("📊 **מחשבון משכנתא**\nשלח פקודה בפורמט:\n\n`/calc סכום ריבית(%) שנים`")
-
-@dp.message(Command("calc"))
-async def calc_mortgage(message: types.Message):
-    try:
-        parts = message.text.split()
-        if len(parts) != 4:
-            await message.answer("📊 **שימוש נכון:** /calc סכום ריבית(%) שנים")
-            return
-
-        loan = float(parts[1])
-        interest = float(parts[2]) / 100 / 12
-        years = int(parts[3])
-        months = years * 12
-
-        if loan <= 0 or interest <= 0 or years <= 0:
-            await message.answer("⚠️ הערכים חייבים להיות חיוביים!")
-            return
-
-        payment = (loan * interest) / (1 - (1 + interest) ** -months)
-
-        await message.answer(f"💰 **ההחזר החודשי:** `{payment:,.2f} ש״ח`", parse_mode="Markdown")
-    except Exception as e:
-        logging.error(f"Error in calc_mortgage: {e}")
-        await message.answer("❌ אירעה שגיאה בחישוב. נסה שוב.")
-
-# ✅ חיפוש דירות
-@dp.callback_query(F.data == "search")
-async def search_callback(callback: types.CallbackQuery):
-    await callback.message.answer("🔍 **חיפוש דירות**\nשלח פקודה בפורמט:\n\n`/search מינימום מחיר מקסימום מחיר`")
-
-@dp.message(Command("search"))
-async def search_listing(message: types.Message):
-    try:
-        parts = message.text.split()
-        if len(parts) != 3:
-            await message.answer("🔍 **שימוש נכון:** /search מינימום מקסימום")
-            return
-
-        min_price = int(parts[1])
-        max_price = int(parts[2])
-
-        async with get_db() as db:
-            cursor = await db.execute("SELECT description, price, photo_id FROM listings WHERE price BETWEEN ? AND ?", (min_price, max_price))
-            rows = await cursor.fetchall()
-
-        if not rows:
-            await message.answer("❌ לא נמצאו דירות בטווח המחירים הזה.")
-            return
-
-        for desc, price, photo_id in rows:
-            if photo_id:
-                await message.answer_photo(photo_id, caption=f"🏡 {desc} - {price} ש״ח")
-            else:
-                await message.answer(f"🏡 {desc} - {price} ש״ח")
-
-    except Exception as e:
-        logging.error(f"Error in search_listing: {e}")
-        await message.answer("❌ שגיאה בחיפוש. נסה שוב.")
-
-# ✅ מטפל להודעות רגילות
-@dp.message(F.text)
-async def handle_message(message: types.Message):
-    await message.answer(f"היי! קיבלתי את ההודעה שלך: {message.text}")
-
-# ✅ מטפל להודעות לא ידועות
-@dp.message()
-async def unknown_message(message: types.Message):
-    await message.answer("לא הבנתי את ההודעה שלך. נסה להשתמש בפקודות כמו /start או /help.")
+# ✅ פקודת עזרה
+@dp.callback_query(F.data == "help")
+async def help_callback(callback: CallbackQuery):
+    await callback.message.edit_text("ℹ️ **עזרה**\nבחר קטגוריה למידע נוסף:", reply_markup=get_main_keyboard())
 
 # ✅ הפעלת הבוט
 async def main():
     logging.basicConfig(level=logging.INFO)
-    await init_db()
+    await init_db()  # יצירת טבלאות במסד הנתונים
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
