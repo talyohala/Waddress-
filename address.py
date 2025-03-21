@@ -1,207 +1,468 @@
-import re
-from os import environ
-from Script import script
-from telegram import Update
-from telegram.ext import Updater, CommandHandler, CallbackContext
+import os
+import sys
+import json
+import logging
+import random
+import sqlite3
+import asyncio
 import requests
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import Message
+from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
+from contextlib import closing
+from datetime import datetime, timedelta
 
-id_pattern = re.compile(r'^.\d+$')
+# הגדרת logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Bot information
-SESSION = environ.get('SESSION', 'TechVJBot')
-API_ID = int(environ.get('API_ID', '29525287'))
-API_HASH = environ.get('API_HASH', 'f9e7627252d42bea8a120e80bacd11d6')
-BOT_TOKEN = environ.get('BOT_TOKEN', "")
-BIT_API_KEY = 'YOUR_BIT_API_KEY'  # מפתח API של ביט
+# טעינת משתנים מהסביבה
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8034267278:AAGUWCyTEAK_ub3Sk9AOtz9mQ1Ihl6Ukxh8").strip()
+TMDB_API_KEY = os.getenv("TMDB_API_KEY", "").strip()
+ADMIN_ID = 7663483746  # המספר שלך קבוע ישירות
 
-# This Pictures Is For Start Message Picture, You Can Add Multiple By Giving One Space Between Each.
-PICS = (environ.get('PICS', 'https://graph.org/file/ce1723991756e48c35aa1.jpg')).split()
+if not TOKEN or ":" not in TOKEN:
+    logger.error("❌ שגיאה: TOKEN אינו תקין! ודא שהוא מוגדר כראוי.")
+    sys.exit(1)
 
-# Admins & Users
-ADMINS = [int(admin) if id_pattern.search(admin) else admin for admin in environ.get('ADMINS', '7663483746').split()]
-auth_users = [int(user) if id_pattern.search(user) else user for user in environ.get('AUTH_USERS', '').split()]
-AUTH_USERS = (auth_users + ADMINS) if auth_users else []
+if not TMDB_API_KEY:
+    logger.error("❌ שגיאה: TMDB_API_KEY לא מוגדר! ודא שהכנסת API Key תקין.")
+    sys.exit(1)
 
-# Log Channel
-LOG_CHANNEL = int(environ.get('LOG_CHANNEL', '-4786880551'))
+# יצירת אובייקטים של הבוט עם תמיכה ב-Aiogram 3.7
+bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+dp = Dispatcher()
 
-# Channels
-CHANNELS = [int(ch) if id_pattern.search(ch) else ch for ch in environ.get('CHANNELS', '-4729910639').split()]
+MOVIES_JSON_PATH = "/data/data/com.termux/files/home/movies_links.json"
+VLC_LINK = "http://troya.info/pl/13/grdgiekhp3dla/playlist.m3u8"
 
-# Force Subscribe
-REQUEST_TO_JOIN_MODE = bool(environ.get('REQUEST_TO_JOIN_MODE', False))
-TRY_AGAIN_BTN = bool(environ.get('TRY_AGAIN_BTN', False))
-auth_channel = environ.get('AUTH_CHANNEL', '-4608019635')
-AUTH_CHANNEL = int(auth_channel) if auth_channel and id_pattern.search(auth_channel) else None
+# מילון לשמירת תוצאות חיפוש עבור כל משתמש
+user_data = {}
 
-# Request Channel
-reqst_channel = environ.get('REQST_CHANNEL', '')
-REQST_CHANNEL = int(reqst_channel) if reqst_channel and id_pattern.search(reqst_channel) else None
-
-# Index Request Channel
-INDEX_REQ_CHANNEL = int(environ.get('INDEX_REQ_CHANNEL', LOG_CHANNEL))
-
-# Support Group
-support_chat_id = environ.get('SUPPORT_CHAT_ID', '-4647428616')
-SUPPORT_CHAT_ID = int(support_chat_id) if support_chat_id and id_pattern.search(support_chat_id) else None
-
-# File Store Channel
-FILE_STORE_CHANNEL = [int(ch) for ch in (environ.get('FILE_STORE_CHANNEL', '')).split()]
-
-# Delete Channels
-DELETE_CHANNELS = [int(dch) if id_pattern.search(dch) else dch for dch in environ.get('DELETE_CHANNELS', '-4667478009').split()]
-
-# MongoDB information
-DATABASE_URI = environ.get('DATABASE_URI', "mongodb+srv://tboxmove:HkhLBoLvv03Ozvht@cluster0.5yuuw.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
-DATABASE_NAME = environ.get('DATABASE_NAME', "tboxmovietv")
-COLLECTION_NAME = environ.get('COLLECTION_NAME', 'vjcollection')
-
-MULTIPLE_DATABASE = bool(environ.get('MULTIPLE_DATABASE', False))
-O_DB_URI = environ.get('O_DB_URI', "")
-F_DB_URI = environ.get('F_DB_URI', "")
-S_DB_URI = environ.get('S_DB_URI', "")
-
-# Premium And Referal Settings
-PREMIUM_AND_REFERAL_MODE = bool(environ.get('PREMIUM_AND_REFERAL_MODE', True))
-REFERAL_COUNT = int(environ.get('REFERAL_COUNT', '20'))
-REFERAL_PREMEIUM_TIME = environ.get('REFERAL_PREMEIUM_TIME', '1month'))
-PAYMENT_QR = environ.get('PAYMENT_QR', 'https://graph.org/file/ce1723991756e48c35aa1.jpg'))
-PAYMENT_TEXT = environ.get('PAYMENT_TEXT', '- ᴀᴠᴀɪʟᴀʙʟᴇ ᴘʟᴀɴs - \n\n- 30ʀs - 1 ᴡᴇᴇᴋ\n- 50ʀs - 1 ᴍᴏɴᴛʜs\n- 120ʀs - 3 ᴍᴏɴᴛʜs\n- 220ʀs - 6 ᴍᴏɴᴛʜs\n\n🎁 ᴘʀᴇᴍɪᴜᴍ ғᴇᴀᴛᴜʀᴇs 🎁\n\n○ ɴᴏ ɴᴇᴇᴅ ᴛᴏ ᴠᴇʀɪғʏ\n○ ɴᴏ ɴᴇᴇᴅ ᴛᴏ ᴏᴘᴇɴ ʟɪɴᴋ\n○ ᴅɪʀᴇᴄᴛ ғɪʟᴇs\n○ ᴀᴅ-ғʀᴇᴇ ᴇxᴘᴇʀɪᴇɴᴄᴇ\n○ ʜɪɢʜ-sᴘᴇᴇᴅ ᴅᴏᴡɴʟᴏᴀᴅ ʟɪɴᴋ\n○ ᴍᴜʟᴛɪ-ᴘʟᴀʏᴇʀ sᴛʀᴇᴀᴍɪɴɢ ʟɪɴᴋs\n○ ᴜɴʟɪᴍɪᴛᴇᴅ ᴍᴏᴠɪᴇs & sᴇʀɪᴇs\n○ ꜰᴜʟʟ ᴀᴅᴍɪɴ sᴜᴘᴘᴏʀᴛ\n○ ʀᴇǫᴜᴇsᴛ ᴡɪʟʟ ʙᴇ ᴄᴏᴍᴘʟᴇᴛᴇᴅ ɪɴ 1ʜ ɪꜰ ᴀᴠᴀɪʟᴀʙʟᴇ\n\n✨ ᴜᴘɪ ɪᴅ - demo@okxyz\n\nᴄʟɪᴄᴋ ᴛᴏ ᴄʜᴇᴄᴋ ʏᴏᴜʀ ᴀᴄᴛɪᴠᴇ ᴘʟᴀɴ /myplan\n\n💢 ᴍᴜsᴛ sᴇɴᴅ sᴄʀᴇᴇɴsʜᴏᴛ ᴀғᴛᴇʀ ᴘᴀʏᴍᴇɴᴛ\n\n‼️ ᴀғᴛᴇʀ sᴇɴᴅɪɴɢ ᴀ sᴄʀᴇᴇɴsʜᴏᴛ ᴘʟᴇᴀsᴇ ɢɪᴠᴇ ᴜs sᴏᴍᴇ ᴛɪᴍᴇ ᴛᴏ ᴀᴅᴅ ʏᴏᴜ ɪɴ ᴛʜᴇ ᴘʀᴇᴍɪᴜᴍ')
-
-# Clone Information
-CLONE_MODE = bool(environ.get('CLONE_MODE', False))
-CLONE_DATABASE_URI = environ.get('CLONE_DATABASE_URI', "")
-PUBLIC_FILE_CHANNEL = environ.get('PUBLIC_FILE_CHANNEL', '')
-
-# Links
-GRP_LNK = environ.get('GRP_LNK', 'https://t.me/+d64NJgw7W6AxN2Jk')
-CHNL_LNK = environ.get('CHNL_LNK', 'https://t.me/vj_botz')
-SUPPORT_CHAT = environ.get('SUPPORT_CHAT', 'vj_bot_disscussion')
-OWNER_LNK = environ.get('OWNER_LNK', 'https://t.me/kingvj01')
-
-# True Or False
-AI_SPELL_CHECK = bool(environ.get('AI_SPELL_CHECK', True))
-PM_SEARCH = bool(environ.get('PM_SEARCH', True))
-BUTTON_MODE = bool(environ.get('BUTTON_MODE', True))
-MAX_BTN = bool(environ.get('MAX_BTN', True))
-IS_TUTORIAL = bool(environ.get('IS_TUTORIAL', False))
-IMDB = bool(environ.get('IMDB', False))
-AUTO_FFILTER = bool(environ.get('AUTO_FFILTER', True))
-AUTO_DELETE = bool(environ.get('AUTO_DELETE', True))
-LONG_IMDB_DESCRIPTION = bool(environ.get("LONG_IMDB_DESCRIPTION", False))
-SPELL_CHECK_REPLY = bool(environ.get("SPELL_CHECK_REPLY", True))
-MELCOW_NEW_USERS = bool(environ.get('MELCOW_NEW_USERS', True))
-PROTECT_CONTENT = bool(environ.get('PROTECT_CONTENT', False))
-PUBLIC_FILE_STORE = bool(environ.get('PUBLIC_FILE_STORE', True))
-NO_RESULTS_MSG = bool(environ.get("NO_RESULTS_MSG", False))
-USE_CAPTION_FILTER = bool(environ.get('USE_CAPTION_FILTER', True))
-
-# Token Verification Info
-VERIFY = bool(environ.get('VERIFY', False))
-VERIFY_SHORTLINK_URL = environ.get('VERIFY_SHORTLINK_URL', '')
-VERIFY_SHORTLINK_API = environ.get('VERIFY_SHORTLINK_API', '')
-VERIFY_TUTORIAL = environ.get('VERIFY_TUTORIAL', '')
-
-# If You Fill Second Shortner Then Bot Attach Both First And Second Shortner And Use It For Verify.
-VERIFY_SECOND_SHORTNER = bool(environ.get('VERIFY_SECOND_SHORTNER', False))
-
-# if verify second shortner is True then fill below url and api
-VERIFY_SND_SHORTLINK_URL = environ.get('VERIFY_SND_SHORTLINK_URL', '')
-VERIFY_SND_SHORTLINK_API = environ.get('VERIFY_SND_SHORTLINK_API', '')
-
-# Shortlink Info
-SHORTLINK_MODE = bool(environ.get('SHORTLINK_MODE', False))
-SHORTLINK_URL = environ.get('SHORTLINK_URL', '')
-SHORTLINK_API = environ.get('SHORTLINK_API', '')
-TUTORIAL = environ.get('TUTORIAL', '')
-
-# Others
-CACHE_TIME = int(environ.get('CACHE_TIME', 1800))
-MAX_B_TN = environ.get("MAX_B_TN", "5")
-PORT = environ.get("PORT", "8080")
-MSG_ALRT = environ.get('MSG_ALRT', 'Hello My Dear Friends ❤️')
-CUSTOM_FILE_CAPTION = environ.get("CUSTOM_FILE_CAPTION", f"{script.CAPTION}")
-BATCH_FILE_CAPTION = environ.get("BATCH_FILE_CAPTION", CUSTOM_FILE_CAPTION)
-IMDB_TEMPLATE = environ.get("IMDB_TEMPLATE", f"{script.IMDB_TEMPLATE_TXT}")
-MAX_LIST_ELM = environ.get("MAX_LIST_ELM", None)
-
-# Choose Option Settings
-LANGUAGES = ["malayalam", "mal", "tamil", "tam", "english", "eng", "hindi", "hin", "telugu", "tel", "kannada", "kan"]
-SEASONS = ["season 1", "season 2", "season 3", "season 4", "season 5", "season 6", "season 7", "season 8", "season 9", "season 10"]
-EPISODES = ["E01", "E02", "E03", "E04", "E05", "E06", "E07", "E08", "E09", "E10", "E11", "E12", "E13", "E14", "E15", "E16", "E17", "E18", "E19", "E20", "E21", "E22", "E23", "E24", "E25", "E26", "E27", "E28", "E29", "E30", "E31", "E32", "E33", "E34", "E35", "E36", "E37", "E38", "E39", "E40"]
-QUALITIES = ["360p", "480p", "720p", "1080p", "1440p", "2160p"]
-YEARS = ["1900", "1991", "1992", "1993", "1994", "1995", "1996", "1997", "1998", "1999", "2000", "2001", "2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
-
-# Don't Remove Credit @VJ_Botz
-# Subscribe YouTube Channel For Amazing Bot @Tech_VJ
-# Ask Doubt on telegram @KingVJ01
-
-# Online Stream and Download
-STREAM_MODE = bool(environ.get('STREAM_MODE', True))
-
-# If Stream Mode Is True Then Fill All Required Variable, If False Then Don't Fill.
-MULTI_CLIENT = False
-SLEEP_THRESHOLD = int(environ.get('SLEEP_THRESHOLD', '60'))
-PING_INTERVAL = int(environ.get("PING_INTERVAL", "1200"))  # 20 minutes
-if 'DYNO' in environ:
-    ON_HEROKU = True
-else:
-    ON_HEROKU = False
-URL = environ.get("URL", "https://testofvjfilter-1fa60b1b8498.herokuapp.com/")
-
-# Rename Info : If True Then Bot Rename File Else Not
-RENAME_MODE = bool(environ.get('RENAME_MODE', False))
-
-# Auto Approve Info : If True Then Bot Approve New Upcoming Join Request Else Not
-AUTO_APPROVE_MODE = bool(environ.get('AUTO_APPROVE_MODE', False))
-
-# Start Command Reactions
-REACTIONS = ["🤝", "😇", "🤗", "😍", "👍", "🎅", "😐", "🥰", "🤩", "😱", "🤣", "😘", "👏", "😛", "😈", "🎉", "⚡️", "🫡", "🤓", "😎", "🏆", "🔥", "🤭", "🌚", "🆒", "👻", "😁"]
-
-if MULTIPLE_DATABASE == False:
-    USER_DB_URI = DATABASE_URI
-    OTHER_DB_URI = DATABASE_URI
-    FILE_DB_URI = DATABASE_URI
-    SEC_FILE_DB_URI = DATABASE_URI
-else:
-    USER_DB_URI = DATABASE_URI  # This Db is for User Data Store
-    OTHER_DB_URI = O_DB_URI  # This Db Is For Other Data Store
-    FILE_DB_URI = F_DB_URI  # This Db Is For File Data Store
-    SEC_FILE_DB_URI = S_DB_URI  # This Db is for File Data Store When First Db Is Going To Be Full.
-
-# פונקציה ליצירת קישור תשלום בביט
-def create_bit_payment_link(amount):
-    url = "https://bit-il.co.il/api/create_payment"  # כתובת ה-API של ביט
-    headers = {"Authorization": f"Bearer {BIT_API_KEY}"}  # מפתח API של ביט
-    data = {
-        "amount": amount,
-        "currency": "ILS",
-        "callback_url": "https://your-callback-url.com"  # כתובת לחזרה לאחר התשלום
-    }
-    response = requests.post(url, headers=headers, json=data)
-    if response.status_code == 200:
-        return response.json().get("payment_url")
+# פונקציה לטעינת רשימת הסרטים
+def load_movies_links():
+    if os.path.exists(MOVIES_JSON_PATH):  
+        with open(MOVIES_JSON_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
     else:
-        return "שגיאה ביצירת קישור תשלום."
+        return {}  
 
-# פונקציה לטיפול בפקודת /pay
-def pay(update: Update, context: CallbackContext):
-    amount = 100  # סכום לדוגמה: 100 ש"ח
-    payment_url = create_bit_payment_link(amount)
-    update.message.reply_text(f"לחץ על הקישור כדי לשלם: {payment_url}")
+movies_links = load_movies_links()
 
-# הגדרת הבוט
-def main():
-    updater = Updater(BOT_TOKEN)
-    dispatcher = updater.dispatcher
+# פונקציה לקבלת חיבור למסד נתונים
+def get_db_connection():
+    return sqlite3.connect("bot_users.db", check_same_thread=False)
 
-    # הוספת פקודות
-    dispatcher.add_handler(CommandHandler("start", start))
-    dispatcher.add_handler(CommandHandler("pay", pay))
+# יצירת מסד הנתונים אם לא קיים
+def init_db():
+    with closing(get_db_connection()) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            is_blocked INTEGER DEFAULT 0
+        );
+        ''')
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS favorites (
+            user_id INTEGER,
+            movie_id INTEGER,
+            PRIMARY KEY (user_id, movie_id)
+        );
+        ''')
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS views (
+            user_id INTEGER,
+            movie_id INTEGER,
+            views INTEGER DEFAULT 0,
+            PRIMARY KEY (user_id, movie_id)
+        );
+        ''')
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS search_history (
+            user_id INTEGER,
+            query TEXT,
+            search_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        ''')
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS live_access (
+            user_id INTEGER PRIMARY KEY,
+            approved INTEGER DEFAULT 0,
+            approval_expiry TIMESTAMP,
+            is_blocked INTEGER DEFAULT 0
+        );
+        ''')
+        conn.commit()
 
-    # הפעלת הבוט
-    updater.start_polling()
-    updater.idle()
+init_db()
+
+# ✅ **תיקון המקלדת בצורה הנכונה**
+def set_custom_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🔥 המלצות חמות"), KeyboardButton(text="🏆 הנצפים ביותר")],
+            [KeyboardButton(text="⭐ מועדפים"), KeyboardButton(text="🎲 סרט אקראי")],
+            [KeyboardButton(text="📺 צפייה בלייב")]
+        ],
+        resize_keyboard=True
+    )
+
+# 📌 **פקודה /start**
+@dp.message(Command("start"))
+async def start_command(message: Message):
+    user_id = message.chat.id
+    username = message.from_user.username
+
+    with closing(get_db_connection()) as conn:
+        cursor = conn.cursor()
+        cursor.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user_id, username))
+        conn.commit()
+
+    # ברכות משתנות
+    greetings = [
+        "🎬 ברוך הבא לבוט הסרטים של TBOX!",
+        "🍿 היי! מוכנים לצפייה בסרטים מדהימים?",
+        "🌟 ברוכים הבאים ל-TBOX, המקום הכי טוב לסרטים!",
+        "🎥 שלום! בואו נתחיל את החוויה הקולנועית שלכם."
+    ]
+    greeting = random.choice(greetings)
+
+    await message.answer(greeting, reply_markup=set_custom_keyboard())
+
+# 📌 **טיפול בכפתורים בתפריט הראשי**
+@dp.message(lambda message: message.text in ["🔥 המלצות חמות", "🏆 הנצפים ביותר", "⭐ מועדפים", "🎲 סרט אקראי"])
+async def handle_main_menu(message: Message):
+    user_id = message.chat.id
+    if message.text == "🔥 המלצות חמות":
+        await get_hot_recommendations(user_id)
+    elif message.text == "🏆 הנצפים ביותר":
+        await get_top_rated(user_id)
+    elif message.text == "⭐ מועדפים":
+        await show_favorites(user_id)
+    elif message.text == "🎲 סרט אקראי":
+        await get_random_movie(user_id)
+
+# 📌 **חיפוש סרטים לפי שם**
+@dp.message(lambda message: message.text and not message.text.startswith("/"))
+async def search_movie_by_name(message: Message):
+    user_id = message.chat.id
+    query = message.text.strip()
+
+    # שמירת החיפוש בהיסטוריה
+    with closing(get_db_connection()) as conn:
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO search_history (user_id, query) VALUES (?, ?)", (user_id, query))
+        conn.commit()
+
+    url = f"https://api.themoviedb.org/3/search/movie?api_key={TMDB_API_KEY}&language=he-IL&query={query}"
+    response = requests.get(url)
+    response.raise_for_status()
+    movies = response.json().get("results", [])
+
+    if not movies:
+        await message.answer("❌ לא נמצאו תוצאות לחיפוש.")
+        return
+
+    user_data[user_id] = {
+        "movies": movies,
+        "current_index": 0
+    }
+
+    await send_movie_details(user_id, movies[0])
+
+# 📌 **המלצות חמות**
+async def get_hot_recommendations(user_id):
+    url = f"https://api.themoviedb.org/3/movie/popular?api_key={TMDB_API_KEY}&language=he-IL"
+    response = requests.get(url)
+    response.raise_for_status()
+    movies = response.json().get("results", [])
+
+    if not movies:
+        await bot.send_message(user_id, "❌ לא נמצאו המלצות חמות.")
+        return
+
+    user_data[user_id] = {
+        "movies": movies,
+        "current_index": 0
+    }
+
+    await send_movie_details(user_id, movies[0])
+
+# 📌 **הנצפים ביותר**
+async def get_top_rated(user_id):
+    url = f"https://api.themoviedb.org/3/movie/top_rated?api_key={TMDB_API_KEY}&language=he-IL"
+    response = requests.get(url)
+    response.raise_for_status()
+    movies = response.json().get("results", [])
+
+    if not movies:
+        await bot.send_message(user_id, "❌ לא נמצאו סרטים נצפים ביותר.")
+        return
+
+    user_data[user_id] = {
+        "movies": movies,
+        "current_index": 0
+    }
+
+    await send_movie_details(user_id, movies[0])
+
+# 📌 **מועדפים**
+async def show_favorites(user_id):
+    with closing(get_db_connection()) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT movie_id FROM favorites WHERE user_id = ?", (user_id,))
+        favorites = cursor.fetchall()
+
+    if not favorites:
+        await bot.send_message(user_id, "❌ אין לך סרטים מועדפים.")
+        return
+
+    movies = []
+    for fav in favorites:
+        movie_id = fav[0]
+        url = f"https://api.themoviedb.org/3/movie/{movie_id}?api_key={TMDB_API_KEY}&language=he-IL"
+        response = requests.get(url)
+        if response.status_code == 200:
+            movies.append(response.json())
+
+    if not movies:
+        await bot.send_message(user_id, "❌ לא נמצאו סרטים מועדפים.")
+        return
+
+    user_data[user_id] = {
+        "movies": movies,
+        "current_index": 0
+    }
+
+    await send_movie_details(user_id, movies[0])
+
+# 📌 **סרט אקראי**
+async def get_random_movie(user_id):
+    url = f"https://api.themoviedb.org/3/movie/popular?api_key={TMDB_API_KEY}&language=he-IL"
+    response = requests.get(url)
+    response.raise_for_status()
+    movies = response.json().get("results", [])
+
+    if not movies:
+        await bot.send_message(user_id, "❌ לא נמצאו סרטים אקראיים.")
+        return
+
+    random_movies = random.sample(movies, min(5, len(movies)))
+    user_data[user_id] = {
+        "movies": random_movies,
+        "current_index": 0
+    }
+
+    await send_movie_details(user_id, random_movies[0])
+
+# 📌 **שליחת פרטי סרט**
+async def send_movie_details(user_id, movie, edit_message_id=None):
+    title = movie["title"]
+    movie_id = movie["id"]
+    
+    watch_url = movies_links.get(title)
+    trailer_url = f"https://api.themoviedb.org/3/movie/{movie_id}/videos?api_key={TMDB_API_KEY}&language=he-IL"
+    trailer_response = requests.get(trailer_url)
+    trailer_data = trailer_response.json().get("results", [])
+    trailer_link = f"https://www.youtube.com/watch?v={trailer_data[0]['key']}" if trailer_data else None
+    
+    buttons = []
+    if watch_url:
+        buttons.append([InlineKeyboardButton(text="🍿 צפייה מהנה", url=watch_url)])
+    if trailer_link:
+        buttons.append([InlineKeyboardButton(text="🎥 צפייה בטריילר", url=trailer_link)])
+    
+    # בדיקה אם הסרט כבר במועדפים
+    with closing(get_db_connection()) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM favorites WHERE user_id = ? AND movie_id = ?", (user_id, movie_id))
+        is_favorite = cursor.fetchone()
+
+    if is_favorite:
+        buttons.append([InlineKeyboardButton(text="❌ הסר ממועדפים", callback_data=f"unfavorite_{movie_id}")])
+    else:
+        buttons.append([InlineKeyboardButton(text="⭐ הוסף למועדפים", callback_data=f"favorite_{movie_id}")])
+    
+    buttons.append([InlineKeyboardButton(text="⬅️ הקודם", callback_data=f"prev_{movie_id}"),
+                    InlineKeyboardButton(text="➡️ הבא", callback_data=f"next_{movie_id}")])
+
+    markup = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    text = f"🎬 <b>{title}</b>\n⭐ דירוג TMDB: {movie.get('vote_average', 0)}\n"
+    
+    poster_url = f"https://image.tmdb.org/t/p/w300{movie.get('poster_path', '')}"
+    
+    # בדיקה אם הקישור לתמונה תקין
+    try:
+        logger.info(f"🖼️ בדיקת קישור לתמונה: {poster_url}")
+        response = requests.head(poster_url)
+        if response.status_code != 200:
+            logger.error(f"❌ קישור לתמונה לא תקין: {poster_url}")
+            poster_url = None  # אם הקישור לא תקין, נבטל את שליחת התמונה
+    except Exception as e:
+        logger.error(f"❌ שגיאה בבדיקת הקישור לתמונה: {e}")
+        poster_url = None
+
+    if edit_message_id:
+        if poster_url:
+            await bot.edit_message_media(chat_id=user_id, message_id=edit_message_id, media=types.InputMediaPhoto(media=poster_url, caption=text, parse_mode=ParseMode.HTML), reply_markup=markup)
+        else:
+            await bot.edit_message_text(chat_id=user_id, message_id=edit_message_id, text=text, reply_markup=markup, parse_mode=ParseMode.HTML)
+    else:
+        if poster_url:
+            await bot.send_photo(user_id, poster_url, caption=text, parse_mode=ParseMode.HTML, reply_markup=markup)
+        else:
+            await bot.send_message(user_id, text, reply_markup=markup, parse_mode=ParseMode.HTML)
+
+# 📌 **הוספה למועדפים**
+@dp.callback_query(lambda call: call.data.startswith("favorite_"))
+async def add_to_favorites(call: types.CallbackQuery):
+    movie_id = int(call.data.split("_")[1])
+    user_id = call.from_user.id
+
+    with closing(get_db_connection()) as conn:
+        cursor = conn.cursor()
+        cursor.execute("INSERT OR IGNORE INTO favorites (user_id, movie_id) VALUES (?, ?)", (user_id, movie_id))
+        conn.commit()
+
+    await call.answer("✅ הסרט נוסף למועדפים!")
+
+# 📌 **הסרה ממועדפים**
+@dp.callback_query(lambda call: call.data.startswith("unfavorite_"))
+async def remove_from_favorites(call: types.CallbackQuery):
+    movie_id = int(call.data.split("_")[1])
+    user_id = call.from_user.id
+
+    with closing(get_db_connection()) as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM favorites WHERE user_id = ? AND movie_id = ?", (user_id, movie_id))
+        conn.commit()
+
+    await call.answer("✅ הסרט הוסר מהמועדפים!")
+
+# 📌 **ניווט בין סרטים**
+@dp.callback_query(lambda call: call.data.startswith("prev_") or call.data.startswith("next_"))
+async def navigate_movies(call: types.CallbackQuery):
+    user_id = call.from_user.id
+    if user_id not in user_data:
+        await call.answer("❌ אין תוצאות חיפוש זמינות.")
+        return
+
+    current_index = user_data[user_id]["current_index"]
+    movies = user_data[user_id]["movies"]
+
+    if call.data.startswith("prev_"):
+        new_index = max(0, current_index - 1)
+    else:
+        new_index = min(len(movies) - 1, current_index + 1)
+
+    user_data[user_id]["current_index"] = new_index
+    await send_movie_details(user_id, movies[new_index], call.message.message_id)
+
+# 📌 **צפייה בלייב**
+@dp.message(lambda message: message.text == "📺 צפייה בלייב")
+async def live_stream(message: Message):
+    user_id = message.chat.id
+    username = message.from_user.username or "אורח"
+
+    with closing(get_db_connection()) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT approved, approval_expiry, is_blocked FROM live_access WHERE user_id = ?", (user_id,))
+        access_data = cursor.fetchone()
+
+    if not access_data:
+        await message.answer("❌ אין לך גישה לצפייה בלייב. אנא בקש אישור ממנהל המערכת.")
+        # שלח למנהל הודעה עם שם המשתמש
+        await bot.send_message(ADMIN_ID, f"👤 משתמש חדש מבקש גישה לצפייה בלייב:\n🆔 ID: {user_id}\n👤 שם משתמש: @{username}")
+        return
+
+    approved, expiry_date, is_blocked = access_data
+
+    if is_blocked:
+        await message.answer("⛔ אתה חסום מצפייה בלייב. אנא פנה למנהל המערכת.")
+        return
+
+    if not approved or datetime.now() > datetime.strptime(expiry_date, "%Y-%m-%d %H:%M:%S"):
+        await message.answer("❌ האישור שלך לצפייה בלייב פג תוקף. אנא בקש אישור חדש ממנהל המערכת.")
+        # שלח למנהל הודעה עם שם המשתמש
+        await bot.send_message(ADMIN_ID, f"👤 משתמש מבקש אישור מחדש לצפייה בלייב:\n🆔 ID: {user_id}\n👤 שם משתמש: @{username}")
+        return
+
+    await message.answer(f"📺 צפייה בלייב: [לחץ כאן לצפייה]({VLC_LINK})", parse_mode=ParseMode.MARKDOWN)
+
+# 📌 **פקודת /approve (למנהל בלבד)**
+@dp.message(Command("approve"))
+async def approve_user(message: Message):
+    if message.chat.id != ADMIN_ID:
+        await message.answer("⛔ אין לך הרשאה לבצע פעולה זו!")
+        return
+
+    try:
+        user_id = int(message.text.split()[1])
+    except (IndexError, ValueError):
+        await message.answer("❌ שימוש: /approve <user_id>")
+        return
+
+    expiry_date = (datetime.now() + timedelta(days=365)).strftime("%Y-%m-%d %H:%M:%S")
+
+    with closing(get_db_connection()) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT OR REPLACE INTO live_access (user_id, approved, approval_expiry, is_blocked)
+            VALUES (?, 1, ?, 0)
+        """, (user_id, expiry_date))
+        conn.commit()
+
+    await message.answer(f"✅ המשתמש {user_id} אושר לצפייה בלייב למשך שנה.")
+
+# 📌 **פקודת /block_live (למנהל בלבד)**
+@dp.message(Command("block_live"))
+async def block_user_live(message: Message):
+    if message.chat.id != ADMIN_ID:
+        await message.answer("⛔ אין לך הרשאה לבצע פעולה זו!")
+        return
+
+    try:
+        user_id = int(message.text.split()[1])
+    except (IndexError, ValueError):
+        await message.answer("❌ שימוש: /block_live <user_id>")
+        return
+
+    with closing(get_db_connection()) as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE live_access SET is_blocked = 1 WHERE user_id = ?", (user_id,))
+        conn.commit()
+
+    await message.answer(f"✅ המשתמש {user_id} נחסם מצפייה בלייב.")
+
+# 📌 **פקודת /unblock_live (למנהל בלבד)**
+@dp.message(Command("unblock_live"))
+async def unblock_user_live(message: Message):
+    if message.chat.id != ADMIN_ID:
+        await message.answer("⛔ אין לך הרשאה לבצע פעולה זו!")
+        return
+
+    try:
+        user_id = int(message.text.split()[1])
+    except (IndexError, ValueError):
+        await message.answer("❌ שימוש: /unblock_live <user_id>")
+        return
+
+    with closing(get_db_connection()) as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE live_access SET is_blocked = 0 WHERE user_id = ?", (user_id,))
+        conn.commit()
+
+    await message.answer(f"✅ המשתמש {user_id} שוחרר מחסימה לצפייה בלייב.")
+
+# 📌 **הפעלת הבוט**
+async def main():
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
